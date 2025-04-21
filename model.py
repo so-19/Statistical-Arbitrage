@@ -28,6 +28,7 @@ class StatisticalArbitrage:
         self.models = {}
         self.trade_signals = {}
         self.trade_performance = {}
+        self.forecast_performance = {}
         
     def fetch_data(self):
         self.data = yf.download(self.assets, start=self.start_date, end=self.end_date)['Close']
@@ -165,6 +166,115 @@ class StatisticalArbitrage:
         except Exception as e:
             print(f"Error fitting ARIMA-GARCH for {stock1}-{stock2}: {str(e)}")
             return None
+    
+    def evaluate_forecast_performance(self, stock1, stock2, horizons=[1, 5, 20], test_size=252):
+        if (stock1, stock2) not in self.models:
+            self.fit_arima_garch(stock1, stock2)
+            if (stock1, stock2) not in self.models:
+                return None
+        
+        model_data = self.models[(stock1, stock2)]
+        spread = model_data['spread']
+        
+        # Ensure test_size is not larger than available data
+        test_size = min(test_size, len(spread) // 2)
+        
+        results = {}
+        forecast_df = pd.DataFrame(index=spread.index[-test_size:])
+        
+        for h in horizons:
+            print(f"Evaluating {h}-day ahead forecasts...")
+            forecast_errors = []
+            rw_errors = []
+            forecast_values = []
+            
+            # Rolling window forecast
+            for i in range(test_size - h):
+                train_end = len(spread) - test_size + i
+                train_data = spread.iloc[:train_end]
+                test_point = spread.iloc[train_end + h - 1]  # h days ahead
+                
+                # Fit ARIMA model on training data
+                try:
+                    arima_order = model_data['arima'].model.order
+                    temp_model = ARIMA(train_data, order=arima_order)
+                    temp_fit = temp_model.fit()
+                    
+                    # Generate h-step ahead forecast
+                    forecast = temp_fit.forecast(steps=h)
+                    forecast_value = forecast.iloc[-1]
+                    
+                    # Random walk forecast (last observed value)
+                    rw_forecast = train_data.iloc[-1]
+                    
+                    # Calculate errors
+                    error = test_point - forecast_value
+                    rw_error = test_point - rw_forecast
+                    
+                    forecast_errors.append(error)
+                    rw_errors.append(rw_error)
+                    forecast_values.append(forecast_value)
+                except Exception as e:
+                    print(f"Error in forecast iteration {i} for horizon {h}: {str(e)}")
+                    continue
+            
+            if not forecast_errors:
+                print(f"No valid forecasts for horizon {h}")
+                continue
+                
+            # Convert to numpy arrays
+            forecast_errors = np.array(forecast_errors)
+            rw_errors = np.array(rw_errors)
+            
+            # Calculate RMSE
+            rmse = np.sqrt(np.mean(forecast_errors**2))
+            rw_rmse = np.sqrt(np.mean(rw_errors**2))
+            
+            # Calculate improvement
+            improvement = (rw_rmse - rmse) / rw_rmse * 100
+            
+            # Store results
+            results[h] = {
+                'rmse': rmse,
+                'random_walk_rmse': rw_rmse,
+                'improvement': improvement,
+                'forecast_errors': forecast_errors
+            }
+            
+            # Add forecasts to DataFrame for visualization
+            forecast_col = f'forecast_{h}day'
+            forecast_df[forecast_col] = np.nan
+            forecast_df[forecast_col].iloc[h-1:h-1+len(forecast_values)] = forecast_values
+        
+        # Visualize forecast performance
+        plt.figure(figsize=(14, 10))
+        plt.plot(spread.iloc[-test_size:], label='Actual Spread', color='black')
+        
+        colors = ['blue', 'red', 'green']
+        for i, h in enumerate(horizons):
+            if h in results:
+                forecast_col = f'forecast_{h}day'
+                if forecast_col in forecast_df.columns:
+                    plt.plot(forecast_df[forecast_col], 
+                             label=f'{h}-day Forecast (RMSE: {results[h]["rmse"]:.3f})', 
+                             color=colors[i % len(colors)],
+                             alpha=0.7)
+        
+        plt.title('Forecast Performance Comparison')
+        plt.legend()
+        plt.grid(True)
+        plt.show()
+        
+        # Summary table
+        print("\nForecast Performance Summary:")
+        print("-" * 65)
+        print(f"{'Horizon':>10} | {'RMSE':>10} | {'RW RMSE':>10} | {'Improvement':>15}")
+        print("-" * 65)
+        for h in sorted(results.keys()):
+            print(f"{h:>10d} | {results[h]['rmse']:>10.3f} | {results[h]['random_walk_rmse']:>10.3f} | {results[h]['improvement']:>15.2f}%")
+        
+        self.forecast_performance[(stock1, stock2)] = results
+        return results
     
     def generate_signals(self, stock1, stock2, entry_threshold=2.0, exit_threshold=0.5):
         if (stock1, stock2) not in self.models:
@@ -366,6 +476,29 @@ class StatisticalArbitrage:
             print(f"{i+1}. {stock1} - {stock2}: p-value = {pvalue:.4f}")
         
         return self.analyze_all_pairs()
+    
+    def analyze_paper_pair(self):
+        print("Analyzing GDXJ-UNG pair from the paper...")
+        if 'GDXJ' not in self.assets or 'UNG' not in self.assets:
+            print("GDXJ or UNG not in asset list. Unable to replicate paper analysis.")
+            return
+        
+        # 1. Fit ARIMA-GARCH model
+        self.fit_arima_garch('GDXJ', 'UNG', arima_order=(2,0,1), garch_order=(1,1))
+        
+        # 2. Evaluate forecast performance
+        forecast_perf = self.evaluate_forecast_performance('GDXJ', 'UNG', horizons=[1, 5, 20])
+        
+        # 3. Generate trading signals
+        self.generate_signals('GDXJ', 'UNG')
+        
+        # 4. Backtest the strategy
+        performance = self.backtest_strategy('GDXJ', 'UNG', adaptive=True)
+        
+        return {
+            'forecast_performance': forecast_perf,
+            'trading_performance': performance
+        }
 
 def main():
     assets = [
@@ -411,7 +544,7 @@ def main():
         'EWU',   # United Kingdom
         'EWC'    # Canada
     ]    
-    stat_arb = StatisticalArbitrage(assets)
+    stat_arb = StatisticalArbitrage(assets, start_date='2015-01-01', end_date='2023-01-01')  # Using data range from paper
     data = stat_arb.fetch_data()
     
     # Check if data is valid and has content
@@ -439,7 +572,11 @@ def main():
             for i, (stock1, stock2, pvalue) in enumerate(pairs):
                 print(f"{i+1}. {stock1} - {stock2}: p-value = {pvalue:.4f}")
             
-            best_pair = stat_arb.analyze_all_pairs()
+            # First analyze the GDXJ-UNG pair from the paper to replicate section 3.2.4 results
+            paper_results = stat_arb.analyze_paper_pair()
+            
+            # Then continue with the rest of the analysis
+            best_pair = stat_arb.analyze_all_pairs(max_pairs=3)
             if best_pair:
                 stock1, stock2 = best_pair[0]
                 print(f"\nDetailed analysis of best pair: {stock1} - {stock2}")
