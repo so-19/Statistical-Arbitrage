@@ -174,9 +174,7 @@ class StatisticalArbitrage:
                 return None
         
         model_data = self.models[(stock1, stock2)]
-        spread = model_data['spread']
-        
-        # Ensure test_size is not larger than available data
+        spread = model_data['spread']        
         test_size = min(test_size, len(spread) // 2)
         
         results = {}
@@ -188,26 +186,19 @@ class StatisticalArbitrage:
             rw_errors = []
             forecast_values = []
             
-            # Rolling window forecast
             for i in range(test_size - h):
                 train_end = len(spread) - test_size + i
                 train_data = spread.iloc[:train_end]
-                test_point = spread.iloc[train_end + h - 1]  # h days ahead
+                test_point = spread.iloc[train_end + h - 1] 
                 
-                # Fit ARIMA model on training data
                 try:
                     arima_order = model_data['arima'].model.order
                     temp_model = ARIMA(train_data, order=arima_order)
                     temp_fit = temp_model.fit()
                     
-                    # Generate h-step ahead forecast
                     forecast = temp_fit.forecast(steps=h)
                     forecast_value = forecast.iloc[-1]
-                    
-                    # Random walk forecast (last observed value)
                     rw_forecast = train_data.iloc[-1]
-                    
-                    # Calculate errors
                     error = test_point - forecast_value
                     rw_error = test_point - rw_forecast
                     
@@ -221,19 +212,11 @@ class StatisticalArbitrage:
             if not forecast_errors:
                 print(f"No valid forecasts for horizon {h}")
                 continue
-                
-            # Convert to numpy arrays
             forecast_errors = np.array(forecast_errors)
             rw_errors = np.array(rw_errors)
-            
-            # Calculate RMSE
             rmse = np.sqrt(np.mean(forecast_errors**2))
             rw_rmse = np.sqrt(np.mean(rw_errors**2))
-            
-            # Calculate improvement
             improvement = (rw_rmse - rmse) / rw_rmse * 100
-            
-            # Store results
             results[h] = {
                 'rmse': rmse,
                 'random_walk_rmse': rw_rmse,
@@ -241,12 +224,9 @@ class StatisticalArbitrage:
                 'forecast_errors': forecast_errors
             }
             
-            # Add forecasts to DataFrame for visualization
             forecast_col = f'forecast_{h}day'
             forecast_df[forecast_col] = np.nan
-            forecast_df[forecast_col].iloc[h-1:h-1+len(forecast_values)] = forecast_values
-        
-        # Visualize forecast performance
+            forecast_df[forecast_col].iloc[h-1:h-1+len(forecast_values)] = forecast_values        
         plt.figure(figsize=(14, 10))
         plt.plot(spread.iloc[-test_size:], label='Actual Spread', color='black')
         
@@ -265,7 +245,6 @@ class StatisticalArbitrage:
         plt.grid(True)
         plt.show()
         
-        # Summary table
         print("\nForecast Performance Summary:")
         print("-" * 65)
         print(f"{'Horizon':>10} | {'RMSE':>10} | {'RW RMSE':>10} | {'Improvement':>15}")
